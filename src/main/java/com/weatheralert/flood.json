@@ -1,0 +1,9 @@
+{
+  "alerts": {
+    "type": "flood",
+    "severity": "severe",
+    "description": "Flash flood warning in effect."
+  },
+  "location": "Sample Location",
+  "timestamp": "2024-11-13T10:00:00Z"
+}
