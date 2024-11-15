@@ -3,6 +3,9 @@ package com.weatheralert;
 import org.json.JSONException;
 import redis.clients.jedis.Jedis;
 import org.json.JSONObject;
+
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.net.HttpURLConnection;
@@ -18,6 +21,9 @@ public class WeatherFetcher {
     private boolean useMockData = false; // Set to true for testing with mock data
     private Jedis publishJedis;
 
+    // Map to store user-defined alert thresholds (temperature, wind_speed, humidity, etc.)
+    private Map<String, Double> userAlertConditions = new HashMap<>();
+
     public WeatherFetcher(Jedis publishJedis) {
         this.publishJedis = publishJedis;
     }
@@ -30,7 +36,7 @@ public class WeatherFetcher {
                 System.out.println("Timer triggered");
                 fetchAndPublishWeatherData();
             }
-        }, 0, 10 * 1000);
+        }, 0, 60 * 1000);  // Fetch every minute
 
         Timer updateTimer = new Timer();
         updateTimer.scheduleAtFixedRate(new TimerTask() {
@@ -38,16 +44,23 @@ public class WeatherFetcher {
             public void run() {
                 publishDailyWeatherUpdate();
             }
-        }, 0, 10 * 1000);
+        }, 0, 60 * 1000);  // Publish updates every minute
     }
 
+    // Fetch and publish weather data
     public void fetchAndPublishWeatherData() {
         try {
             System.out.println("Fetching weather data...");
             String weatherData = fetchWeatherData();
             boolean extremeTemperature = checkForExtremeTemperature(weatherData);
+            // Check for custom alerts in addition to extreme temperatures
+            boolean customAlertsTriggered = checkForCustomAlerts(weatherData);
 
-            if (extremeTemperature) {
+            if (extremeTemperature || customAlertsTriggered) {
+                System.out.println("Published an alert!");
+            }
+
+            if (extremeTemperature || customAlertsTriggered) {
                 String message = "Extreme temperature alert! Take precautions.";
                 publishJedis.publish(REDIS_CHANNEL_ALERTS, message);
                 System.out.println("Published alert: " + message);
@@ -57,6 +70,7 @@ public class WeatherFetcher {
         }
     }
 
+    // Publish daily weather update
     public void publishDailyWeatherUpdate() {
         try {
             String weatherData = fetchWeatherData();
@@ -68,6 +82,7 @@ public class WeatherFetcher {
         }
     }
 
+    // Fetch weather data (either mock data or from API)
     private String fetchWeatherData() {
         if (useMockData) {
             try {
@@ -113,6 +128,7 @@ public class WeatherFetcher {
         }
     }
 
+    // Check for extreme temperatures (below 5°C or above 30°C)
     public boolean checkForExtremeTemperature(String weatherData) {
         try {
             JSONObject json = new JSONObject(weatherData);
@@ -136,6 +152,7 @@ public class WeatherFetcher {
         return false;
     }
 
+    // Get the weather update message
     private String getWeatherUpdateMessage(String weatherData) {
         try {
             JSONObject json = new JSONObject(weatherData);
@@ -161,6 +178,44 @@ public class WeatherFetcher {
             e.printStackTrace();
             return "Unable to fetch weather update at this time.";
         }
+    }
+
+    // Set a custom alert threshold (temperature, wind speed, humidity, etc.)
+    public void setCustomAlert(String condition, double threshold) {
+        userAlertConditions.put(condition.toLowerCase(), threshold); // Ensure condition names are case-insensitive
+    }
+
+    // Check for custom alerts based on user-defined thresholds
+    public boolean checkForCustomAlerts(String weatherData) {
+        boolean alertTriggered = false;
+        try {
+            JSONObject json = new JSONObject(weatherData);
+            if (json.has("current_weather")) {
+                JSONObject currentWeather = json.getJSONObject("current_weather");
+
+                // Check custom conditions like temperature, wind speed, and humidity
+                alertTriggered |= checkConditionAndPublishAlert("temperature", currentWeather.optDouble("temperature", Double.NaN));
+                alertTriggered |= checkConditionAndPublishAlert("wind_speed", currentWeather.optDouble("wind_speed", Double.NaN));
+                alertTriggered |= checkConditionAndPublishAlert("humidity", currentWeather.optDouble("humidity", Double.NaN));
+            }
+        } catch (Exception e) {
+            System.out.println("Error parsing weather data for custom alert check: " + e.getMessage());
+        }
+        return alertTriggered;
+    }
+
+    // General method to check a condition (e.g., temperature, wind speed) and publish an alert
+    private boolean checkConditionAndPublishAlert(String condition, double actualValue) {
+        if (Double.isNaN(actualValue)) return false;
+
+        Double threshold = userAlertConditions.get(condition.toLowerCase());
+        if (threshold != null && actualValue > threshold) {
+            String message = String.format("Custom alert: %s exceeds %.2f! Current value: %.2f", condition, threshold, actualValue);
+            publishJedis.publish(REDIS_CHANNEL_ALERTS, message);
+            System.out.println("Published custom alert: " + message);
+            return true;
+        }
+        return false;
     }
 
     public static void main(String[] args) {
